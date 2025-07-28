@@ -156,8 +156,8 @@ class MetaBlock(torch.nn.Module):
 
     def __init__(
         self,
-        dims: int,
-        num_channels: int,
+        num_tokens: int,
+        token_size: int,
         projection_dims: int,
         permutation: Permutation,
         num_layers: int = 1,
@@ -167,8 +167,10 @@ class MetaBlock(torch.nn.Module):
         num_classes: int = 0,
     ):
         super().__init__()
-        self.proj_in = torch.nn.Linear(num_channels, projection_dims)
-        self.pos_embed = torch.nn.Parameter(torch.randn(projection_dims) * 1e-2)
+        self.proj_in = torch.nn.Linear(token_size, projection_dims)
+        self.pos_embed = torch.nn.Parameter(
+            torch.randn(num_tokens, projection_dims) * 1e-2
+        )
         if num_classes:
             self.class_embed = torch.nn.Parameter(
                 torch.randn(num_classes, 1, projection_dims) * 1e-2
@@ -186,7 +188,9 @@ class MetaBlock(torch.nn.Module):
         self.proj_out = torch.nn.Linear(projection_dims, output_dim)
         self.proj_out.weight.data.fill_(0.0)
         self.permutation = permutation
-        self.register_buffer("attn_mask", torch.tril(torch.ones(dims, dims)))
+        self.register_buffer(
+            "attn_mask", torch.tril(torch.ones(num_tokens, num_tokens))
+        )
 
     def forward(
         self, x: torch.Tensor, y: torch.Tensor | None = None
@@ -301,8 +305,8 @@ class Model(torch.nn.Module):
 
     def __init__(
         self,
-        dims: int,
-        num_channels: int,
+        num_tokens: int,
+        token_size: int,
         projection_dims: int,
         num_blocks: int,
         layers_per_block: int,
@@ -310,19 +314,19 @@ class Model(torch.nn.Module):
         num_classes: int = 0,
     ):
         super().__init__()
-        self.dims = dims
-        self.num_channels = num_channels
+        self.num_tokens = num_tokens
+        self.token_size = token_size
         permutations = [
-            PermutationIdentity(dims),
-            PermutationFlip(dims),
+            PermutationIdentity(num_tokens),
+            PermutationFlip(num_tokens),
         ]
 
         blocks = []
         for i in range(num_blocks):
             blocks.append(
                 MetaBlock(
-                    dims,
-                    num_channels,
+                    num_tokens,
+                    token_size,
                     projection_dims,
                     permutations[i % 2],
                     layers_per_block,
@@ -332,7 +336,7 @@ class Model(torch.nn.Module):
             )
         self.blocks = torch.nn.ModuleList(blocks)
         # prior for nvp mode should be all ones, but needs to be learnd for the vp mode
-        self.register_buffer("var", torch.ones(num_channels))
+        self.register_buffer("var", torch.ones(num_tokens, token_size))
 
     def forward(
         self, x: torch.Tensor, y: torch.Tensor | None = None
