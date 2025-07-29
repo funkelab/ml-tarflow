@@ -184,7 +184,7 @@ class MetaBlock(torch.nn.Module):
             ]
         )
         self.nvp = nvp
-        output_dim = 2 if nvp else 1
+        output_dim = token_size * 2 if nvp else token_size
         self.proj_out = torch.nn.Linear(projection_dims, output_dim)
         self.proj_out.weight.data.fill_(0.0)
         self.permutation = permutation
