@@ -1,0 +1,83 @@
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+
+
+[project]
+name = "tarflow"
+dynamic = ["version"]
+description = "Tarflow implementation adjusted from https://github.com/apple/ml-tarflow."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [
+  { email = "szhai@apple.com", name="Shuangfei Zhai" },
+  { email = "funkej@janelia.hhmi.org", name = "Jan Funke" },
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Typing :: Typed",
+]
+dependencies = [
+  "torch==2.5.1",
+  "torchvision==0.20.1",
+  "jupyter>=1.0.0",
+  "torch-fidelity==0.3.0",
+  "torchmetrics==1.6.0",
+]
+
+[dependency-groups]
+dev = [
+  "ipython>=8.18.1",
+  "mypy>=1.15.0",
+  "pre-commit>=4.2.0",
+  "pytest>=8.3.5",
+  "pytest-cov>=6.1.1",
+  "ruff>=0.11.10",
+]
+
+
+[project.urls]
+homepage = "https://github.com/funkelab/ml-tarflow"
+repository = "https://github.com/funkelab/ml-tarflow"
+
+[tool.ruff]
+target-version = "py39"
+line-length = 88
+
+[tool.ruff.lint]
+select = [
+  "E",   # style errors
+  "F",   # flakes
+  "W",   # warnings
+  "I",   # isort
+  "UP",  # pyupgrade
+  "TC",  # typing
+  "TID", # tidy imports
+  "RUF", # ruff
+]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.mypy]
+files = "*.py"
+strict = false
+disallow_any_generics = false
+disallow_subclassing_any = false
+show_error_codes = true
+pretty = true
+
+[tool.pytest.ini_options]
+addopts = "-v --color=yes"
+filterwarnings = ["error", "ignore:'cgi' is deprecated"]
