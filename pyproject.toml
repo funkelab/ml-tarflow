@@ -29,8 +29,7 @@ classifiers = [
   "Typing :: Typed",
 ]
 dependencies = [
-  "torch==2.5.1",
-  "torchvision==0.20.1",
+  "torch",
   "jupyter>=1.0.0",
   "torch-fidelity==0.3.0",
   "torchmetrics==1.6.0",
