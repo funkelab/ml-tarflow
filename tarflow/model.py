@@ -156,35 +156,54 @@ class MetaBlock(torch.nn.Module):
 
     def __init__(
         self,
-        in_channels: int,
-        channels: int,
-        num_patches: int,
+        num_tokens: int,
+        token_size: int,
+        projection_dims: int,
         permutation: Permutation,
         num_layers: int = 1,
         head_dim: int = 64,
         expansion: int = 4,
         nvp: bool = True,
         num_classes: int = 0,
+        cond_dim: int = 0,
     ):
         super().__init__()
-        self.proj_in = torch.nn.Linear(in_channels, channels)
-        self.pos_embed = torch.nn.Parameter(torch.randn(num_patches, channels) * 1e-2)
+
+        assert num_classes == 0 or cond_dim == 0, (
+            "Only one of num_classes or cond_dim can be non-zero."
+        )
+
+        self.can_have_y = num_classes > 0 or cond_dim > 0
+        self.continuous_y = cond_dim > 0
+
+        self.proj_in = torch.nn.Linear(token_size, projection_dims)
+        self.pos_embed = torch.nn.Parameter(
+            torch.randn(num_tokens, projection_dims) * 1e-2
+        )
+
         if num_classes:
             self.class_embed = torch.nn.Parameter(
-                torch.randn(num_classes, 1, channels) * 1e-2
+                torch.randn(num_classes, 1, projection_dims) * 1e-2
             )
         else:
             self.class_embed = None
+
+        if self.continuous_y:
+            self.y_proj = torch.nn.Linear(cond_dim, projection_dims)
+
         self.attn_blocks = torch.nn.ModuleList(
-            [AttentionBlock(channels, head_dim, expansion) for _ in range(num_layers)]
+            [
+                AttentionBlock(projection_dims, head_dim, expansion)
+                for _ in range(num_layers)
+            ]
         )
         self.nvp = nvp
-        output_dim = in_channels * 2 if nvp else in_channels
-        self.proj_out = torch.nn.Linear(channels, output_dim)
-        self.proj_out.weight.data.fill_(0.0)
+        output_dim = token_size * 2 if nvp else token_size
+        self.proj_out = torch.nn.Linear(projection_dims, output_dim)
+        # self.proj_out.weight.data.fill_(0.0)
         self.permutation = permutation
         self.register_buffer(
-            "attn_mask", torch.tril(torch.ones(num_patches, num_patches))
+            "attn_mask", torch.tril(torch.ones(num_tokens, num_tokens))
         )
 
     def forward(
@@ -194,18 +213,27 @@ class MetaBlock(torch.nn.Module):
         pos_embed = self.permutation(self.pos_embed, dim=0)
         x_in = x
         x = self.proj_in(x) + pos_embed
-        if self.class_embed is not None:
-            if y is not None:
-                if (y < 0).any():
-                    m = (y < 0).float().view(-1, 1, 1)
-                    class_embed = (1 - m) * self.class_embed[
-                        y
-                    ] + m * self.class_embed.mean(dim=0)
-                else:
-                    class_embed = self.class_embed[y]
-                x = x + class_embed
+
+        if self.can_have_y:
+            if self.continuous_y:
+                # y           : (batch_size, cond_dim)
+                # y_proj(y)   : (batch_size, projection_dims)
+                # y_embedding : (batch_size, 1, projection_dims)
+                # x           : (batch_size, num_tokens, projection_dims)
+                y_embedding = self.y_proj(y).unsqueeze(1)
+                x = x + y_embedding
             else:
-                x = x + self.class_embed.mean(dim=0)
+                if y is not None:
+                    if (y < 0).any():
+                        m = (y < 0).float().view(-1, 1, 1)
+                        class_embed = (1 - m) * self.class_embed[
+                            y
+                        ] + m * self.class_embed.mean(dim=0)
+                    else:
+                        class_embed = self.class_embed[y]
+                    x = x + class_embed
+                else:
+                    x = x + self.class_embed.mean(dim=0)
 
         for block in self.attn_blocks:
             x = block(x, self.attn_mask)
@@ -230,13 +258,25 @@ class MetaBlock(torch.nn.Module):
         attn_temp: float = 1.0,
         which_cache: str = "cond",
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        x_in = x[:, i : i + 1]  # get i-th patch but keep the sequence dimension
+        # x   : (batch_size, num_tokens, token_size)
+        x_in = x[:, i : i + 1]  # get i-th token but keep the token size dimension
+        # x_in: (batch_size, 1, token_size)
         x = self.proj_in(x_in) + pos_embed[i : i + 1]
-        if self.class_embed is not None:
-            if y is not None:
-                x = x + self.class_embed[y]
+        # x   : (batch_size, 1, projection_dims)
+
+        if self.can_have_y:
+            if self.continuous_y:
+                # y           : (batch_size, cond_dim)
+                # y_proj(y)   : (batch_size, projection_dims)
+                # y_embedding : (batch_size, 1, projection_dims)
+                # x           : (batch_size, 1, projection_dims)
+                y_embedding = self.y_proj(y).unsqueeze(1)
+                x = x + y_embedding
             else:
-                x = x + self.class_embed.mean(dim=0)
+                if y is not None:
+                    x = x + self.class_embed[y]
+                else:
+                    x = x + self.class_embed.mean(dim=0)
 
         for block in self.attn_blocks:
             x = block(
@@ -249,6 +289,7 @@ class MetaBlock(torch.nn.Module):
         else:
             xb = x
             xa = torch.zeros_like(x)
+
         return xa, xb
 
     def set_sample_mode(self, flag: bool = True):
@@ -300,59 +341,44 @@ class Model(torch.nn.Module):
 
     def __init__(
         self,
-        in_channels: int,
-        img_size: int,
-        patch_size: int,
-        channels: int,
+        num_tokens: int,
+        token_size: int,
+        projection_dims: int,
         num_blocks: int,
         layers_per_block: int,
         nvp: bool = True,
         num_classes: int = 0,
+        cond_dim: int = 0,
     ):
         super().__init__()
-        self.img_size = img_size
-        self.patch_size = patch_size
-        self.num_patches = (img_size // patch_size) ** 2
+        self.num_tokens = num_tokens
+        self.token_size = token_size
         permutations = [
-            PermutationIdentity(self.num_patches),
-            PermutationFlip(self.num_patches),
+            PermutationIdentity(num_tokens),
+            PermutationFlip(num_tokens),
         ]
 
         blocks = []
         for i in range(num_blocks):
             blocks.append(
                 MetaBlock(
-                    in_channels * patch_size**2,
-                    channels,
-                    self.num_patches,
+                    num_tokens,
+                    token_size,
+                    projection_dims,
                     permutations[i % 2],
                     layers_per_block,
                     nvp=nvp,
                     num_classes=num_classes,
+                    cond_dim=cond_dim,
                 )
             )
         self.blocks = torch.nn.ModuleList(blocks)
         # prior for nvp mode should be all ones, but needs to be learnd for the vp mode
-        self.register_buffer(
-            "var", torch.ones(self.num_patches, in_channels * patch_size**2)
-        )
-
-    def patchify(self, x: torch.Tensor) -> torch.Tensor:
-        """Convert an image (N,C',H,W) to a sequence of patches (N,T,C')"""
-        u = torch.nn.functional.unfold(x, self.patch_size, stride=self.patch_size)
-        return u.transpose(1, 2)
-
-    def unpatchify(self, x: torch.Tensor) -> torch.Tensor:
-        """Convert a sequence of patches (N,T,C) to an image (N,C',H,W)"""
-        u = x.transpose(1, 2)
-        return torch.nn.functional.fold(
-            u, (self.img_size, self.img_size), self.patch_size, stride=self.patch_size
-        )
+        self.register_buffer("var", torch.ones(num_tokens, token_size))
 
     def forward(
         self, x: torch.Tensor, y: torch.Tensor | None = None
     ) -> tuple[torch.Tensor, list[torch.Tensor], torch.Tensor]:
-        x = self.patchify(x)
         outputs = []
         logdets = torch.zeros((), device=x.device)
         for block in self.blocks:
@@ -378,12 +404,11 @@ class Model(torch.nn.Module):
         annealed_guidance: bool = False,
         return_sequence: bool = False,
     ) -> torch.Tensor | list[torch.Tensor]:
-        seq = [self.unpatchify(x)]
+        seq = [x]
         x = x * self.var.sqrt()
         for block in reversed(self.blocks):
             x = block.reverse(x, y, guidance, guide_what, attn_temp, annealed_guidance)
-            seq.append(self.unpatchify(x))
-        x = self.unpatchify(x)
+            seq.append(x)
 
         if not return_sequence:
             return x
