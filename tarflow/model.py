@@ -414,3 +414,23 @@ class Model(torch.nn.Module):
             return x
         else:
             return seq
+
+def get_tarflow_model(config, input_dims, num_classes=0, cond_dim=0, ckpt_file=None):
+    tarflow_model = Model(
+        num_tokens=input_dims,
+        token_size=config["tarflow"]["token_size"],         
+        projection_dims=config["tarflow"]["projection_dims"],
+        num_blocks=config["tarflow"]["num_blocks"],
+        layers_per_block=config["tarflow"]["layers_per_block"],
+        nvp=config["tarflow"]["nvp"],
+        num_classes=num_classes,
+        cond_dim=cond_dim,
+    )
+
+    tarflow_model = tarflow_model.to(config.device)
+
+    if ckpt_file:
+        tarflow_model.load_state_dict(torch.load(ckpt_file))
+        print(f"loaded weights from {ckpt_file}")
+
+    return tarflow_model
