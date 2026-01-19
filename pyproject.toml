@@ -8,7 +8,7 @@ source = "vcs"
 
 [project]
 name = "tarflow"
-dynamic = ["version"]
+version = "0.0.1"
 description = "Tarflow implementation adjusted from https://github.com/apple/ml-tarflow."
 readme = "README.md"
 requires-python = ">=3.9"
