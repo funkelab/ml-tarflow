@@ -200,7 +200,7 @@ class MetaBlock(torch.nn.Module):
         self.nvp = nvp
         output_dim = token_size * 2 if nvp else token_size
         self.proj_out = torch.nn.Linear(projection_dims, output_dim)
-        # self.proj_out.weight.data.fill_(0.0)
+        self.proj_out.weight.data.fill_(0.0)
         self.permutation = permutation
         self.register_buffer(
             "attn_mask", torch.tril(torch.ones(num_tokens, num_tokens))
@@ -415,8 +415,8 @@ class Model(torch.nn.Module):
         else:
             return seq
 
-def get_tarflow_model(config, input_dims, cond_dim=0, ckpt_file=None):
-    tarflow_model = Model(
+def get_tarflow(config, cond_dim=0, ckpt_file=None):
+    tarflow = Model(
         num_tokens=config["tarflow"]["z_dim"],
         token_size=config["tarflow"]["token_size"],
         projection_dims=config["tarflow"]["projection_dims"],
@@ -428,7 +428,7 @@ def get_tarflow_model(config, input_dims, cond_dim=0, ckpt_file=None):
     )
 
     if ckpt_file:
-        tarflow_model.load_state_dict(torch.load(ckpt_file))
-        print(f"loaded weights from {ckpt_file}")
+        ckpt = torch.load(ckpt_file)
+        tarflow.load_state_dict(ckpt["tarflow"])
 
-    return tarflow_model
+    return tarflow
