@@ -330,7 +330,9 @@ class MetaBlock(torch.nn.Module):
             scale = (
                 za[:, 0].float().exp().type(za.dtype)
             )  # get rid of the sequence dimension
-            x[:, i + 1] = x[:, i + 1] * scale + zb[:, 0]
+            x_new = x.clone()
+            x_new[:, i + 1] = x[:, i + 1] * scale + zb[:, 0]
+            x = x_new
         self.set_sample_mode(False)
         return self.permutation(x, inverse=True)
 
