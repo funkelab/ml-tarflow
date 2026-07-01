@@ -178,7 +178,7 @@ class MetaBlock(torch.nn.Module):
 
         self.proj_in = torch.nn.Linear(token_size, projection_dims)
         self.pos_embed = torch.nn.Parameter(
-            torch.randn(num_tokens, projection_dims) * 1e-2
+            torch.randn(num_tokens - 1, projection_dims) * 1e-2
         )
 
         if num_classes:
@@ -203,8 +203,11 @@ class MetaBlock(torch.nn.Module):
         self.proj_out.weight.data.fill_(0.0)
         self.permutation = permutation
         self.register_buffer(
-            "attn_mask", torch.tril(torch.ones(num_tokens, num_tokens))
+            "attn_mask", torch.tril(torch.ones(num_tokens - 1, num_tokens - 1))
         )
+        first_token_theta = torch.zeros(size=(1, 1, output_dim))
+        first_token_theta = torch.nn.Parameter(first_token_theta, requires_grad=True)
+        self.register_parameter("first_token_theta", first_token_theta)
 
     def forward(
         self, x: torch.Tensor, y: torch.Tensor | None = None
@@ -212,6 +215,8 @@ class MetaBlock(torch.nn.Module):
         x = self.permutation(x)
         pos_embed = self.permutation(self.pos_embed, dim=0)
         x_in = x
+        # No other token depends on the last token
+        x = x[:, :-1]
         x = self.proj_in(x) + pos_embed
 
         if self.can_have_y:
@@ -238,7 +243,9 @@ class MetaBlock(torch.nn.Module):
         for block in self.attn_blocks:
             x = block(x, self.attn_mask)
         x = self.proj_out(x)
-        x = torch.cat([torch.zeros_like(x[:, :1]), x[:, :-1]], dim=1)
+        batch_size = x.shape[0]
+        first_token_theta = torch.repeat_interleave(self.first_token_theta, repeats=batch_size, dim=0)
+        x = torch.cat([first_token_theta, x], dim=1)
 
         if self.nvp:
             xa, xb = x.chunk(2, dim=-1)
@@ -312,6 +319,16 @@ class MetaBlock(torch.nn.Module):
         pos_embed = self.permutation(self.pos_embed, dim=0)
         self.set_sample_mode(True)
         T = x.size(1)
+        # Before looping over other tokens, reverse first token
+        if self.nvp:
+            za, zb = self.first_token_theta.chunk(2, dim=-1)
+        else:
+            zb = self.first_token_theta
+            za = torch.zeros_like(zb)
+        scale = torch.exp(za.float()).type(za.dtype)
+        x_new = x.clone()
+        x_new[:, 0] = x[:, 0] * scale + zb
+        x = x_new
         for i in range(x.size(1) - 1):
             za, zb = self.reverse_step(x, pos_embed, i, y, which_cache="cond")
             if guidance > 0 and guide_what:
