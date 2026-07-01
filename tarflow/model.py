@@ -221,11 +221,13 @@ class MetaBlock(torch.nn.Module):
 
         if self.can_have_y:
             if self.continuous_y:
-                # y           : (batch_size, cond_dim)
-                # y_proj(y)   : (batch_size, projection_dims)
-                # y_embedding : (batch_size, 1, projection_dims)
-                # x           : (batch_size, num_tokens, projection_dims)
-                y_embedding = self.y_proj(y).unsqueeze(1)
+                # y           : (batch_size, num_tokens, cond_dim)
+                # y_proj(y)   : (batch_size, num_tokens - 1, projection_dims)
+                # y_embedding : (batch_size, num_tokens - 1, projection_dims)
+                # x           : (batch_size, num_tokens - 1, projection_dims)
+                y = self.permutation(y)
+                y = y[:, :-1]
+                y_embedding = self.y_proj(y)
                 x = x + y_embedding
             else:
                 if y is not None:
@@ -273,11 +275,13 @@ class MetaBlock(torch.nn.Module):
 
         if self.can_have_y:
             if self.continuous_y:
-                # y           : (batch_size, cond_dim)
-                # y_proj(y)   : (batch_size, projection_dims)
+                # y           : (batch_size, num_tokens, cond_dim)
+                # y_proj(y)   : (batch_size, 1, projection_dims)
                 # y_embedding : (batch_size, 1, projection_dims)
                 # x           : (batch_size, 1, projection_dims)
-                y_embedding = self.y_proj(y).unsqueeze(1)
+                y = self.permutation(y)
+                y = y[:, i : i + 1]
+                y_embedding = self.y_proj(y)
                 x = x + y_embedding
             else:
                 if y is not None:
