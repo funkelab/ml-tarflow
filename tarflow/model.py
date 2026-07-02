@@ -198,16 +198,18 @@ class MetaBlock(torch.nn.Module):
             ]
         )
         self.nvp = nvp
+        first_token_theta = torch.zeros(size=(1, 1, projection_dims))
+        first_token_theta = torch.nn.Parameter(first_token_theta, requires_grad=True)
+        self.register_parameter("first_token_theta", first_token_theta)
         output_dim = token_size * 2 if nvp else token_size
-        self.proj_out = torch.nn.Linear(projection_dims, output_dim)
+        proj_out_dims = projection_dims * 2 if self.continuous_y else projection_dims
+        self.proj_out = torch.nn.Linear(proj_out_dims, output_dim)
+        # self.proj_out = torch.nn.Linear(projection_dims, output_dim)
         self.proj_out.weight.data.fill_(0.0)
         self.permutation = permutation
         self.register_buffer(
             "attn_mask", torch.tril(torch.ones(num_tokens - 1, num_tokens - 1))
         )
-        first_token_theta = torch.zeros(size=(1, 1, output_dim))
-        first_token_theta = torch.nn.Parameter(first_token_theta, requires_grad=True)
-        self.register_parameter("first_token_theta", first_token_theta)
 
     def forward(
         self, x: torch.Tensor, y: torch.Tensor | None = None
@@ -226,9 +228,7 @@ class MetaBlock(torch.nn.Module):
                 # y_embedding : (batch_size, num_tokens - 1, projection_dims)
                 # x           : (batch_size, num_tokens - 1, projection_dims)
                 y = self.permutation(y)
-                y = y[:, :-1]
                 y_embedding = self.y_proj(y)
-                x = x + y_embedding
             else:
                 if y is not None:
                     if (y < 0).any():
@@ -244,10 +244,13 @@ class MetaBlock(torch.nn.Module):
 
         for block in self.attn_blocks:
             x = block(x, self.attn_mask)
-        x = self.proj_out(x)
         batch_size = x.shape[0]
         first_token_theta = torch.repeat_interleave(self.first_token_theta, repeats=batch_size, dim=0)
         x = torch.cat([first_token_theta, x], dim=1)
+        if self.can_have_y and self.continuous_y:
+            # x = x + y_embedding
+            x = torch.cat((x, y_embedding), dim=-1)
+        x = self.proj_out(x)
 
         if self.nvp:
             xa, xb = x.chunk(2, dim=-1)
@@ -256,7 +259,7 @@ class MetaBlock(torch.nn.Module):
             xa = torch.zeros_like(x)
 
         scale = (-xa.float()).exp().type(xa.dtype)
-        return self.permutation((x_in - xb) * scale, inverse=True), -xa.mean(dim=[1, 2])
+        return self.permutation((x_in - xb) * scale, inverse=True), -xa.sum(dim=[1, 2])
 
     def reverse_step(
         self,
@@ -280,9 +283,8 @@ class MetaBlock(torch.nn.Module):
                 # y_embedding : (batch_size, 1, projection_dims)
                 # x           : (batch_size, 1, projection_dims)
                 y = self.permutation(y)
-                y = y[:, i : i + 1]
+                y = y[:, i + 1 : i + 2]
                 y_embedding = self.y_proj(y)
-                x = x + y_embedding
             else:
                 if y is not None:
                     x = x + self.class_embed[y]
@@ -293,6 +295,9 @@ class MetaBlock(torch.nn.Module):
             x = block(
                 x, attn_temp=attn_temp, which_cache=which_cache
             )  # here we use kv caching, so no attn_mask
+        if self.can_have_y and self.continuous_y:
+            # x = x + y_embedding
+            x = torch.cat((x, y_embedding), dim=-1)
         x = self.proj_out(x)
 
         if self.nvp:
@@ -324,14 +329,22 @@ class MetaBlock(torch.nn.Module):
         self.set_sample_mode(True)
         T = x.size(1)
         # Before looping over other tokens, reverse first token
+        batch_size = x.shape[0]
+        first_token_theta = torch.repeat_interleave(self.first_token_theta, repeats=batch_size, dim=0)
+        if self.can_have_y and self.continuous_y:
+            y = self.permutation(y)
+            y_embedding = self.y_proj(y)
+            # first_token_theta = first_token_theta + y_embedding[:, :1]
+            first_token_theta = torch.cat((first_token_theta, y_embedding[:, :1]), dim=-1)
+        first_token_theta = self.proj_out(first_token_theta)
         if self.nvp:
-            za, zb = self.first_token_theta.chunk(2, dim=-1)
+            za, zb = first_token_theta.chunk(2, dim=-1)
         else:
-            zb = self.first_token_theta
+            zb = first_token_theta
             za = torch.zeros_like(zb)
         scale = torch.exp(za.float()).type(za.dtype)
         x_new = x.clone()
-        x_new[:, 0] = x[:, 0] * scale + zb
+        x_new[:, :1] = x[:, :1] * scale + zb
         x = x_new
         for i in range(x.size(1) - 1):
             za, zb = self.reverse_step(x, pos_embed, i, y, which_cache="cond")
@@ -408,7 +421,7 @@ class Model(torch.nn.Module):
             x, logdet = block(x, y)
             logdets = logdets + logdet
             outputs.append(x)
-        return x, outputs, logdets
+        return x, outputs, logdets  # logdets shape: [B]
 
     def update_prior(self, z: torch.Tensor):
         z2 = (z**2).mean(dim=0)
