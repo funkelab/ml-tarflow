@@ -342,6 +342,7 @@ class MetaBlock(torch.nn.Module):
         else:
             zb = first_token_theta
             za = torch.zeros_like(zb)
+        xa = za
         scale = torch.exp(za.float()).type(za.dtype)
         x_new = x.clone()
         x_new[:, :1] = x[:, :1] * scale + zb
@@ -360,7 +361,8 @@ class MetaBlock(torch.nn.Module):
                     za = za + g * (za - za_u)
                 if "b" in guide_what:
                     zb = zb + g * (zb - zb_u)
-
+            
+            xa = torch.cat((xa, za), 1)
             scale = (
                 za[:, 0].float().exp().type(za.dtype)
             )  # get rid of the sequence dimension
@@ -368,7 +370,7 @@ class MetaBlock(torch.nn.Module):
             x_new[:, i + 1] = x[:, i + 1] * scale + zb[:, 0]
             x = x_new
         self.set_sample_mode(False)
-        return self.permutation(x, inverse=True)
+        return self.permutation(x, inverse=True), -xa.sum(dim=[1, 2])
 
 
 class Model(torch.nn.Module):
@@ -442,14 +444,16 @@ class Model(torch.nn.Module):
     ) -> torch.Tensor | list[torch.Tensor]:
         seq = [x]
         x = x * self.var.sqrt()
+        logdets = torch.zeros((), device=x.device)
         for block in reversed(self.blocks):
-            x = block.reverse(x, y, guidance, guide_what, attn_temp, annealed_guidance)
+            x, logdet = block.reverse(x, y, guidance, guide_what, attn_temp, annealed_guidance)
+            logdets = logdets + logdet
             seq.append(x)
 
         if not return_sequence:
-            return x
+            return x, logdets
         else:
-            return seq
+            return seq, logdets
 
 def get_tarflow(config, cond_dim=0, ckpt_file=None):
     tarflow = Model(
