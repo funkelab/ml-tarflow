@@ -189,7 +189,15 @@ class MetaBlock(torch.nn.Module):
             self.class_embed = None
 
         if self.continuous_y:
-            self.y_proj = torch.nn.Linear(cond_dim, projection_dims)
+            self.y_proj = torch.nn.Sequential(
+                torch.nn.Linear(cond_dim, projection_dims),
+                AttentionBlock(projection_dims, projection_dims),
+                torch.nn.Linear(projection_dims, projection_dims),
+                torch.nn.GELU(),
+                torch.nn.Linear(projection_dims, projection_dims),
+                torch.nn.GELU(),
+                torch.nn.Linear(projection_dims, projection_dims),
+            )
 
         self.attn_blocks = torch.nn.ModuleList(
             [
