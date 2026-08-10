@@ -42,9 +42,40 @@ class Attention(torch.nn.Module):
         self.num_heads = in_channels // head_channels
         self.sqrt_scale = head_channels ** (-0.25)
         self.sample = False
-        self.k_cache: dict[str, list[torch.Tensor]] = {"cond": [], "uncond": []}
-        self.v_cache: dict[str, list[torch.Tensor]] = {"cond": [], "uncond": []}
+        self.cache_max_len = 0
+        self.k_cache: dict[str, torch.Tensor | None] = {"cond": None, "uncond": None}
+        self.v_cache: dict[str, torch.Tensor | None] = {"cond": None, "uncond": None}
+        self.cache_len: dict[str, int] = {"cond": 0, "uncond": 0}
 
+    def _write_cache(
+        self, which_cache: str, k: torch.Tensor, v: torch.Tensor, seq_dim: int
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Write k/v for the current step into a preallocated buffer along
+        `seq_dim` and return the valid (in-use) prefix of that buffer.
+
+        The buffer is allocated lazily on the first call (once we know the
+        batch size, dtype, device and per-token shape) with a fixed length of
+        `self.cache_max_len`, and filled in place step by step.
+        """
+        pos = self.cache_len[which_cache]
+        n = k.size(seq_dim)
+        if self.k_cache[which_cache] is None:
+            shape = list(k.shape)
+            shape[seq_dim] = self.cache_max_len
+            self.k_cache[which_cache] = k.new_zeros(shape)
+            self.v_cache[which_cache] = v.new_zeros(shape)
+        write_idx = [slice(None)] * k.dim()
+        write_idx[seq_dim] = slice(pos, pos + n)
+        write_idx = tuple(write_idx)
+        self.k_cache[which_cache][write_idx] = k
+        self.v_cache[which_cache][write_idx] = v
+        self.cache_len[which_cache] = pos + n
+
+        valid_idx = [slice(None)] * k.dim()
+        valid_idx[seq_dim] = slice(0, self.cache_len[which_cache])
+        valid_idx = tuple(valid_idx)
+        return self.k_cache[which_cache][valid_idx], self.v_cache[which_cache][valid_idx]
+    
     def forward_spda(
         self,
         x: torch.Tensor,
@@ -62,12 +93,8 @@ class Attention(torch.nn.Module):
         )  # (b, h, t, d)
 
         if self.sample:
-            self.k_cache[which_cache].append(k)
-            self.v_cache[which_cache].append(v)
-            k = torch.cat(
-                self.k_cache[which_cache], dim=2
-            )  # note that sequence dimension is now 2
-            v = torch.cat(self.v_cache[which_cache], dim=2)
+            # note that sequence dimension is now 2
+            k, v = self._write_cache(which_cache, k, v, seq_dim=2)
 
         scale = self.sqrt_scale**2 / temp
         if mask is not None:
@@ -90,10 +117,7 @@ class Attention(torch.nn.Module):
         x = self.norm(x.float()).type(x.dtype)
         q, k, v = self.qkv(x).reshape(B, T, 3 * self.num_heads, -1).chunk(3, dim=2)
         if self.sample:
-            self.k_cache[which_cache].append(k)
-            self.v_cache[which_cache].append(v)
-            k = torch.cat(self.k_cache[which_cache], dim=1)
-            v = torch.cat(self.v_cache[which_cache], dim=1)
+            k, v = self._write_cache(which_cache, k, v, seq_dim=1)
 
         attn = (
             torch.einsum("bmhd,bnhd->bmnh", q * self.sqrt_scale, k * self.sqrt_scale)
@@ -292,12 +316,14 @@ class MetaBlock(torch.nn.Module):
 
         return xa, xb
 
-    def set_sample_mode(self, flag: bool = True):
+    def set_sample_mode(self, flag: bool = True, max_len: int = 0):
         for m in self.modules():
             if isinstance(m, Attention):
                 m.sample = flag
-                m.k_cache = {"cond": [], "uncond": []}
-                m.v_cache = {"cond": [], "uncond": []}
+                m.cache_max_len = max_len
+                m.k_cache = {"cond": None, "uncond": None}
+                m.v_cache = {"cond": None, "uncond": None}
+                m.cache_len = {"cond": 0, "uncond": 0}
 
     def reverse(
         self,
@@ -310,8 +336,8 @@ class MetaBlock(torch.nn.Module):
     ) -> torch.Tensor:
         x = self.permutation(x)
         pos_embed = self.permutation(self.pos_embed, dim=0)
-        self.set_sample_mode(True)
         T = x.size(1)
+        self.set_sample_mode(True, T - 1)
         for i in range(x.size(1) - 1):
             za, zb = self.reverse_step(x, pos_embed, i, y, which_cache="cond")
             if guidance > 0 and guide_what:
